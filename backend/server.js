@@ -5,10 +5,9 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const Database = require("better-sqlite3");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -19,23 +18,26 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev-only-change-this-secret";
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 60);
 const MAGIC_LINK_MINUTES = Number(process.env.MAGIC_LINK_MINUTES || 10);
 const COOKIE_NAME = "session_token";
-let mailMode = "fallback";
-
-const DB_FILE = path.join(__dirname, "data.db");
-const DB_SEED_FILE = process.env.DB_SEED_FILE || path.join(__dirname, "data.seed.db");
+const COOKIE_SAME_SITE = process.env.COOKIE_SAME_SITE || "lax";
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || FRONTEND_URL)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const LEGACY_DATA_FILE = path.join(__dirname, "data.json");
 
-function ensureDatabaseFile() {
-  // For first deploy/startup, initialize runtime DB from a tracked seed snapshot.
-  // After that, runtime DB is left untouched so production data is never overwritten.
-  if (!fs.existsSync(DB_FILE) && fs.existsSync(DB_SEED_FILE)) {
-    fs.copyFileSync(DB_SEED_FILE, DB_FILE);
-    console.log(`Initialized database from seed file: ${DB_SEED_FILE}`);
-  }
-}
+const DATABASE_SSL =
+  process.env.DATABASE_SSL === "true" ||
+  (process.env.NODE_ENV === "production" && process.env.DATABASE_SSL !== "false");
 
-ensureDatabaseFile();
-const db = new Database(DB_FILE);
+const pool = new Pool({
+  ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}),
+  ...(DATABASE_SSL ? { ssl: { rejectUnauthorized: false } } : {})
+});
+
+let defaultWorkspaceId = null;
+let mailMode = "fallback";
+let smtpTransporter = null;
 
 // In-memory store for short-lived magic link tokens.
 // Key: sha256(token), Value: { email, expiresAt }
@@ -43,7 +45,13 @@ const magicTokens = new Map();
 
 app.use(
   cors({
-    origin: FRONTEND_URL,
+    origin: (origin, callback) => {
+      if (!origin || CORS_ORIGINS.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
     credentials: true
   })
 );
@@ -75,8 +83,8 @@ function sweepExpiredMagicTokens() {
 function getSessionCookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: COOKIE_SECURE,
+    sameSite: COOKIE_SAME_SITE,
     maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000,
     path: "/"
   };
@@ -102,7 +110,15 @@ function requireAuth(req, res, next) {
   }
 }
 
-async function buildTransporter() {
+function hasBrevoApiConfig() {
+  const apiKey = String(process.env.BREVO_API_KEY || "").trim();
+  const sender = String(process.env.EMAIL_FROM || "").trim();
+  return Boolean(apiKey && sender);
+}
+
+async function buildSmtpTransporter() {
+  // Lazy-load nodemailer so Brevo API mode does not depend on SMTP libraries.
+  const nodemailer = require("nodemailer");
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
   const hasSmtpConfig = SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS;
   const looksLikePlaceholder =
@@ -111,8 +127,6 @@ async function buildTransporter() {
     String(SMTP_PASS || "").includes("your_smtp_password");
 
   if (hasSmtpConfig && !looksLikePlaceholder) {
-    console.log("Mail mode: SMTP");
-    mailMode = "smtp";
     return nodemailer.createTransport({
       host: SMTP_HOST,
       port: Number(SMTP_PORT),
@@ -121,145 +135,197 @@ async function buildTransporter() {
     });
   }
 
-  console.log("Mail mode: local JSON fallback (magic links will be logged to backend terminal)");
-  mailMode = "fallback";
-  return nodemailer.createTransport({ jsonTransport: true });
+  return null;
 }
 
-let mailTransporter;
-buildTransporter()
-  .then((transporter) => {
-    mailTransporter = transporter;
-  })
-  .catch((error) => {
-    console.error("Failed to initialize mail transporter:", error);
-  });
+async function initializeMailSender() {
+  if (hasBrevoApiConfig()) {
+    mailMode = "brevo_api";
+    console.log("Mail mode: Brevo API");
+    return;
+  }
 
-function initializeDatabase() {
-  // Workspace table: each document belongs to one workspace.
-  db.exec(`
+  const transporter = await buildSmtpTransporter();
+  if (transporter) {
+    mailMode = "smtp";
+    smtpTransporter = transporter;
+    console.log("Mail mode: SMTP");
+    return;
+  }
+
+  mailMode = "fallback";
+  console.log("Mail mode: local fallback (magic links will be logged to backend terminal)");
+}
+
+async function sendMagicLinkEmail({ toEmail, link }) {
+  const fromAddress = process.env.EMAIL_FROM || "no-reply@pooleng.com";
+  const fromName = process.env.EMAIL_FROM_NAME || "Pool Engineering";
+  const subject = "Your Pool Engineering magic login link";
+  const text = `Use this login link within ${MAGIC_LINK_MINUTES} minutes: ${link}`;
+  const html = `<p>Click to log in:</p><p><a href="${link}">${link}</a></p><p>This link expires in ${MAGIC_LINK_MINUTES} minutes.</p>`;
+
+  if (mailMode === "brevo_api") {
+    const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": brevoApiKey
+      },
+      body: JSON.stringify({
+        sender: { name: fromName, email: fromAddress },
+        to: [{ email: toEmail }],
+        subject,
+        textContent: text,
+        htmlContent: html
+      })
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Brevo API error (${response.status}): ${errorBody}`);
+    }
+    return;
+  }
+
+  if (mailMode === "smtp" && smtpTransporter) {
+    await smtpTransporter.sendMail({
+      from: fromAddress,
+      to: toEmail,
+      subject,
+      text,
+      html
+    });
+    return;
+  }
+
+  console.log("Magic link (local dev):", link);
+}
+
+async function initializeDatabase() {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS workspaces (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      createdAt TEXT NOT NULL
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
-  db.exec(`
+  // Documents table now stored in Postgres instead of SQLite.
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS items (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT NOT NULL,
-      expirationDate TEXT NOT NULL
+      expiration_date TIMESTAMPTZ NOT NULL,
+      workspace_id TEXT REFERENCES workspaces(id),
+      created_by TEXT,
+      created_at TIMESTAMPTZ
     )
   `);
 
-  // Extend existing documents table with workspaceId if missing.
-  const itemColumns = db.prepare("PRAGMA table_info(items)").all();
-  const hasWorkspaceId = itemColumns.some((column) => column.name === "workspaceId");
-  const hasCreatedBy = itemColumns.some((column) => column.name === "createdBy");
-  const hasCreatedAt = itemColumns.some((column) => column.name === "createdAt");
-  if (!hasWorkspaceId) {
-    db.exec("ALTER TABLE items ADD COLUMN workspaceId TEXT");
-  }
-  if (!hasCreatedBy) {
-    db.exec("ALTER TABLE items ADD COLUMN createdBy TEXT");
-  }
-  if (!hasCreatedAt) {
-    db.exec("ALTER TABLE items ADD COLUMN createdAt TEXT");
+  const defaultWorkspaceName = "General";
+  const existingDefaultWorkspace = await pool.query(
+    "SELECT id FROM workspaces WHERE name = $1 ORDER BY created_at ASC LIMIT 1",
+    [defaultWorkspaceName]
+  );
+
+  if (existingDefaultWorkspace.rows.length === 0) {
+    defaultWorkspaceId = crypto.randomUUID();
+    await pool.query("INSERT INTO workspaces (id, name, created_at) VALUES ($1, $2, NOW())", [
+      defaultWorkspaceId,
+      defaultWorkspaceName
+    ]);
+  } else {
+    defaultWorkspaceId = existingDefaultWorkspace.rows[0].id;
   }
 
-  const existingCount = db.prepare("SELECT COUNT(*) AS count FROM items").get().count;
-  if (existingCount === 0 && fs.existsSync(LEGACY_DATA_FILE)) {
+  const itemCountResult = await pool.query("SELECT COUNT(*)::int AS count FROM items");
+  const itemCount = itemCountResult.rows[0].count;
+
+  // Optional one-time migration from legacy JSON if table is empty.
+  if (itemCount === 0 && fs.existsSync(LEGACY_DATA_FILE)) {
     try {
       const raw = fs.readFileSync(LEGACY_DATA_FILE, "utf8");
       const items = JSON.parse(raw);
+
       if (Array.isArray(items)) {
-        const insertStatement = db.prepare(
-          "INSERT OR IGNORE INTO items (id, name, description, expirationDate, workspaceId, createdBy, createdAt) VALUES (?, ?, ?, ?, NULL, ?, ?)"
-        );
+        for (const item of items) {
+          if (!item?.name || !item?.description || !isValidDate(item?.expirationDate)) {
+            continue;
+          }
 
-        const insertMany = db.transaction((records) => {
-          for (const item of records) {
-            if (!item?.name || !item?.description || !isValidDate(item?.expirationDate)) {
-              continue;
-            }
-
-            insertStatement.run(
+          await pool.query(
+            `INSERT INTO items (id, name, description, expiration_date, workspace_id, created_by, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+            [
               item.id || crypto.randomUUID(),
               String(item.name).trim(),
               String(item.description).trim(),
               new Date(item.expirationDate).toISOString(),
-              "legacy@pooleng.com",
-              new Date().toISOString()
-            );
-          }
-        });
-
-        insertMany(items);
+              defaultWorkspaceId,
+              "legacy@pooleng.com"
+            ]
+          );
+        }
       }
     } catch (error) {
       console.error("Failed to migrate legacy JSON data:", error);
     }
   }
 
-  // Ensure there is always a default workspace so legacy documents can be tied to one.
-  const defaultWorkspaceName = "General";
-  let defaultWorkspace = db.prepare("SELECT id FROM workspaces WHERE name = ?").get(defaultWorkspaceName);
-  if (!defaultWorkspace) {
-    const createdWorkspace = {
-      id: crypto.randomUUID(),
-      name: defaultWorkspaceName,
-      createdAt: new Date().toISOString()
-    };
-    db.prepare("INSERT INTO workspaces (id, name, createdAt) VALUES (?, ?, ?)")
-      .run(createdWorkspace.id, createdWorkspace.name, createdWorkspace.createdAt);
-    defaultWorkspace = { id: createdWorkspace.id };
-  }
-
-  // Documents must belong to exactly one workspace.
-  db.prepare("UPDATE items SET workspaceId = ? WHERE workspaceId IS NULL OR workspaceId = ''")
-    .run(defaultWorkspace.id);
-  db.prepare("UPDATE items SET createdBy = ? WHERE createdBy IS NULL OR createdBy = ''")
-    .run("legacy@pooleng.com");
-  db.prepare("UPDATE items SET createdAt = ? WHERE createdAt IS NULL OR createdAt = ''")
-    .run(new Date().toISOString());
+  // Backfill legacy rows to satisfy "document belongs to a workspace".
+  await pool.query(
+    "UPDATE items SET workspace_id = $1 WHERE workspace_id IS NULL OR workspace_id = ''",
+    [defaultWorkspaceId]
+  );
+  await pool.query(
+    "UPDATE items SET created_by = 'legacy@pooleng.com' WHERE created_by IS NULL OR created_by = ''"
+  );
+  await pool.query("UPDATE items SET created_at = NOW() WHERE created_at IS NULL");
 }
 
-function getAllWorkspaces() {
-  return db.prepare("SELECT id, name, createdAt FROM workspaces ORDER BY datetime(createdAt) ASC").all();
+async function getAllWorkspaces() {
+  const result = await pool.query(
+    'SELECT id, name, created_at AS "createdAt" FROM workspaces ORDER BY created_at ASC'
+  );
+  return result.rows;
 }
 
-function workspaceExists(workspaceId) {
-  const workspace = db.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspaceId);
-  return Boolean(workspace);
+async function workspaceExists(workspaceId) {
+  const result = await pool.query("SELECT id FROM workspaces WHERE id = $1 LIMIT 1", [workspaceId]);
+  return result.rows.length > 0;
 }
 
-function getDocuments(workspaceId) {
-  // Filtering by optional workspaceId keeps sorting by expiration date.
+async function getDocuments(workspaceId) {
+  const baseQuery = `
+    SELECT
+      id,
+      name,
+      description,
+      expiration_date AS "expirationDate",
+      workspace_id AS "workspaceId",
+      created_by AS "createdBy",
+      created_at AS "createdAt"
+    FROM items
+  `;
+
   if (workspaceId) {
-    return db
-      .prepare(
-        "SELECT id, name, description, expirationDate, workspaceId, createdBy, createdAt FROM items WHERE workspaceId = ? ORDER BY datetime(expirationDate) ASC"
-      )
-      .all(workspaceId);
+    const result = await pool.query(
+      `${baseQuery} WHERE workspace_id = $1 ORDER BY expiration_date ASC`,
+      [workspaceId]
+    );
+    return result.rows;
   }
 
-  return db
-    .prepare("SELECT id, name, description, expirationDate, workspaceId, createdBy, createdAt FROM items ORDER BY datetime(expirationDate) ASC")
-    .all();
+  const result = await pool.query(`${baseQuery} ORDER BY expiration_date ASC`);
+  return result.rows;
 }
-
-initializeDatabase();
 
 app.post("/auth/request-magic-link", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   if (!isPoolEngEmail(email)) {
     return res.status(400).json({ error: "Only @pooleng.com emails are allowed" });
-  }
-
-  if (!mailTransporter) {
-    return res.status(503).json({ error: "Email service not ready. Try again in a few seconds." });
   }
 
   sweepExpiredMagicTokens();
@@ -270,34 +336,21 @@ app.post("/auth/request-magic-link", async (req, res) => {
   magicTokens.set(tokenHash, { email, expiresAt });
 
   const link = `${MAGIC_LINK_BASE_URL}/auth/verify-magic?token=${encodeURIComponent(rawToken)}`;
-  const fromAddress = process.env.EMAIL_FROM || "no-reply@pooleng.com";
-  if (mailMode !== "smtp" && process.env.NODE_ENV !== "production") {
-    console.log("Magic link (local dev):", link);
-  }
 
   try {
-    const mailResult = await mailTransporter.sendMail({
-      from: fromAddress,
-      to: email,
-      subject: "Your Pool Engineering magic login link",
-      text: `Use this login link within ${MAGIC_LINK_MINUTES} minutes: ${link}`,
-      html: `<p>Click to log in:</p><p><a href="${link}">${link}</a></p><p>This link expires in ${MAGIC_LINK_MINUTES} minutes.</p>`
-    });
-
-    if (mailResult.message) {
-      console.log("Magic link email payload (dev transport):", mailResult.message.toString());
-    }
+    await sendMagicLinkEmail({ toEmail: email, link });
   } catch (error) {
-    console.error("SMTP send failed:", {
+    console.error("Magic link send failed:", {
       message: error?.message,
       code: error?.code,
       response: error?.response
     });
     magicTokens.delete(tokenHash);
     return res.status(500).json({
-      error: process.env.NODE_ENV === "production"
-        ? "Failed to send magic link email"
-        : `Failed to send magic link email: ${error?.message || "Unknown SMTP error"}`
+      error:
+        process.env.NODE_ENV === "production"
+          ? "Failed to send magic link email"
+          : `Failed to send magic link email: ${error?.message || "Unknown SMTP error"}`
     });
   }
 
@@ -337,15 +390,15 @@ app.use("/api/workspaces", requireAuth);
 app.use("/api/documents", requireAuth);
 app.use("/api/items", requireAuth);
 
-app.get("/api/workspaces", (req, res) => {
+app.get("/api/workspaces", async (req, res) => {
   try {
-    res.json(getAllWorkspaces());
+    res.json(await getAllWorkspaces());
   } catch (error) {
     res.status(500).json({ error: "Failed to load workspaces" });
   }
 });
 
-app.post("/api/workspaces", (req, res) => {
+app.post("/api/workspaces", async (req, res) => {
   const name = String(req.body?.name || "").trim();
   if (!name) {
     return res.status(400).json({ error: "Workspace name is required" });
@@ -354,29 +407,33 @@ app.post("/api/workspaces", (req, res) => {
   try {
     const workspace = {
       id: crypto.randomUUID(),
-      name,
-      createdAt: new Date().toISOString()
+      name
     };
-    db.prepare("INSERT INTO workspaces (id, name, createdAt) VALUES (?, ?, ?)")
-      .run(workspace.id, workspace.name, workspace.createdAt);
-    res.status(201).json(workspace);
+    const result = await pool.query(
+      'INSERT INTO workspaces (id, name, created_at) VALUES ($1, $2, NOW()) RETURNING id, name, created_at AS "createdAt"',
+      [workspace.id, workspace.name]
+    );
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: "Failed to create workspace" });
   }
 });
 
-app.delete("/api/workspaces/:id", (req, res) => {
+app.delete("/api/workspaces/:id", async (req, res) => {
   const { id } = req.params;
 
   try {
     // Workspace deletion is blocked while documents still reference it.
-    const documentCount = db.prepare("SELECT COUNT(*) AS count FROM items WHERE workspaceId = ?").get(id).count;
-    if (documentCount > 0) {
+    const documentCountResult = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM items WHERE workspace_id = $1",
+      [id]
+    );
+    if (documentCountResult.rows[0].count > 0) {
       return res.status(400).json({ error: "Cannot delete workspace that contains documents" });
     }
 
-    const deleteResult = db.prepare("DELETE FROM workspaces WHERE id = ?").run(id);
-    if (deleteResult.changes === 0) {
+    const deleteResult = await pool.query("DELETE FROM workspaces WHERE id = $1", [id]);
+    if (deleteResult.rowCount === 0) {
       return res.status(404).json({ error: "Workspace not found" });
     }
 
@@ -386,11 +443,11 @@ app.delete("/api/workspaces/:id", (req, res) => {
   }
 });
 
-function listDocumentsHandler(req, res) {
+async function listDocumentsHandler(req, res) {
   const workspaceId = String(req.query.workspaceId || "").trim();
 
   try {
-    res.json(getDocuments(workspaceId || null));
+    res.json(await getDocuments(workspaceId || null));
   } catch (error) {
     res.status(500).json({ error: "Failed to load documents" });
   }
@@ -399,14 +456,14 @@ function listDocumentsHandler(req, res) {
 app.get("/api/documents", listDocumentsHandler);
 app.get("/api/items", listDocumentsHandler);
 
-function createDocumentHandler(req, res) {
+async function createDocumentHandler(req, res) {
   const { name, description, expirationDate, workspaceId } = req.body;
 
   if (!name || !description || !expirationDate || !isValidDate(expirationDate) || !workspaceId) {
     return res.status(400).json({ error: "name, description, workspaceId, and a valid expirationDate are required" });
   }
 
-  if (!workspaceExists(workspaceId)) {
+  if (!(await workspaceExists(workspaceId))) {
     return res.status(400).json({ error: "Selected workspace does not exist" });
   }
 
@@ -417,23 +474,25 @@ function createDocumentHandler(req, res) {
       description: String(description).trim(),
       expirationDate: new Date(expirationDate).toISOString(),
       workspaceId: String(workspaceId),
-      // Track who created the document from the authenticated session.
-      createdBy: req.user?.email || "unknown@pooleng.com",
-      createdAt: new Date().toISOString()
+      createdBy: req.user?.email || "unknown@pooleng.com"
     };
 
-    db.prepare("INSERT INTO items (id, name, description, expirationDate, workspaceId, createdBy, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(
+    const result = await pool.query(
+      `INSERT INTO items (id, name, description, expiration_date, workspace_id, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       RETURNING id, name, description, expiration_date AS "expirationDate", workspace_id AS "workspaceId",
+                 created_by AS "createdBy", created_at AS "createdAt"`,
+      [
         document.id,
         document.name,
         document.description,
         document.expirationDate,
         document.workspaceId,
-        document.createdBy,
-        document.createdAt
-      );
+        document.createdBy
+      ]
+    );
 
-    res.status(201).json(document);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: "Failed to create document" });
   }
@@ -442,7 +501,7 @@ function createDocumentHandler(req, res) {
 app.post("/api/documents", createDocumentHandler);
 app.post("/api/items", createDocumentHandler);
 
-function updateDocumentHandler(req, res) {
+async function updateDocumentHandler(req, res) {
   const { id } = req.params;
   const { name, description, expirationDate, workspaceId } = req.body;
 
@@ -450,16 +509,23 @@ function updateDocumentHandler(req, res) {
     return res.status(400).json({ error: "A valid expirationDate is required" });
   }
 
-  if (workspaceId !== undefined && !workspaceExists(workspaceId)) {
+  if (workspaceId !== undefined && !(await workspaceExists(workspaceId))) {
     return res.status(400).json({ error: "Selected workspace does not exist" });
   }
 
   try {
-    const existing = db.prepare("SELECT id, name, description, expirationDate, workspaceId, createdBy, createdAt FROM items WHERE id = ?").get(id);
-    if (!existing) {
+    const existingResult = await pool.query(
+      `SELECT id, name, description, expiration_date AS "expirationDate", workspace_id AS "workspaceId",
+              created_by AS "createdBy", created_at AS "createdAt"
+       FROM items WHERE id = $1`,
+      [id]
+    );
+
+    if (existingResult.rows.length === 0) {
       return res.status(404).json({ error: "Document not found" });
     }
 
+    const existing = existingResult.rows[0];
     const updatedDocument = {
       ...existing,
       ...(name !== undefined ? { name: String(name).trim() } : {}),
@@ -468,15 +534,22 @@ function updateDocumentHandler(req, res) {
       expirationDate: new Date(expirationDate).toISOString()
     };
 
-    db.prepare("UPDATE items SET name = ?, description = ?, expirationDate = ?, workspaceId = ? WHERE id = ?").run(
-      updatedDocument.name,
-      updatedDocument.description,
-      updatedDocument.expirationDate,
-      updatedDocument.workspaceId,
-      id
+    const result = await pool.query(
+      `UPDATE items
+       SET name = $1, description = $2, expiration_date = $3, workspace_id = $4
+       WHERE id = $5
+       RETURNING id, name, description, expiration_date AS "expirationDate", workspace_id AS "workspaceId",
+                 created_by AS "createdBy", created_at AS "createdAt"`,
+      [
+        updatedDocument.name,
+        updatedDocument.description,
+        updatedDocument.expirationDate,
+        updatedDocument.workspaceId,
+        id
+      ]
     );
 
-    res.json(updatedDocument);
+    res.json(result.rows[0]);
   } catch (error) {
     res.status(500).json({ error: "Failed to update document" });
   }
@@ -485,10 +558,10 @@ function updateDocumentHandler(req, res) {
 app.put("/api/documents/:id", updateDocumentHandler);
 app.put("/api/items/:id", updateDocumentHandler);
 
-function deleteDocumentById(id, res) {
+async function deleteDocumentById(id, res) {
   try {
-    const deleteResult = db.prepare("DELETE FROM items WHERE id = ?").run(id);
-    if (deleteResult.changes === 0) {
+    const deleteResult = await pool.query("DELETE FROM items WHERE id = $1", [id]);
+    if (deleteResult.rowCount === 0) {
       return res.status(404).json({ error: "Document not found" });
     }
 
@@ -498,22 +571,30 @@ function deleteDocumentById(id, res) {
   }
 }
 
-app.delete("/api/documents/:id", (req, res) => {
+app.delete("/api/documents/:id", async (req, res) => {
   return deleteDocumentById(req.params.id, res);
 });
 
-app.post("/api/documents/:id/delete", (req, res) => {
+app.post("/api/documents/:id/delete", async (req, res) => {
   return deleteDocumentById(req.params.id, res);
 });
 
-app.delete("/api/items/:id", (req, res) => {
+app.delete("/api/items/:id", async (req, res) => {
   return deleteDocumentById(req.params.id, res);
 });
 
-app.post("/api/items/:id/delete", (req, res) => {
+app.post("/api/items/:id/delete", async (req, res) => {
   return deleteDocumentById(req.params.id, res);
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running on ${BACKEND_URL}`);
-});
+initializeDatabase()
+  .then(async () => {
+    await initializeMailSender();
+    app.listen(PORT, () => {
+      console.log(`Backend running on ${BACKEND_URL}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to initialize Postgres schema:", error);
+    process.exit(1);
+  });

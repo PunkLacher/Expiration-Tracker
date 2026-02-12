@@ -1,25 +1,25 @@
 # License & Document Expiration Tracker
 
-## Database seeding and runtime safety
+## Database
 
-This project uses:
+Backend now uses PostgreSQL via `DATABASE_URL`.
 
-- `backend/data.seed.db` (tracked in git): initial seed database for first deploy/start
-- `backend/data.db` (ignored by git): runtime database used by the app
+On startup, the backend:
 
-Backend startup behavior in `backend/server.js`:
+1. Creates required tables (`workspaces`, `items`) if they do not exist.
+2. Ensures a default workspace exists.
+3. Optionally imports `backend/data.json` once if documents table is empty.
 
-1. If `backend/data.db` does not exist and `backend/data.seed.db` exists, seed is copied to runtime DB.
-2. If `backend/data.db` already exists, it is **not** overwritten.
+For Render free-tier deployments, use a managed Postgres database (Render Postgres, Supabase, Neon, etc.) and set `DATABASE_URL` in backend environment variables.
 
-This allows:
+## Recommended free hosting stack
 
-- initial deploy to start with test/seed data
-- subsequent deploys to preserve production data
+- Frontend: Netlify
+- Backend: Render free web service
+- Database: Neon or Supabase free Postgres (set `DATABASE_URL`)
+- Email: Brevo API (`BREVO_API_KEY`) instead of SMTP
 
-Optional env override:
-
-- `DB_SEED_FILE=/path/to/custom-seed.db`
+Why Brevo API: Render free services commonly restrict outbound SMTP ports, while HTTPS API calls remain available.
 
 ## Local run
 
