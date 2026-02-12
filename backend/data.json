@@ -1,0 +1,20 @@
+[
+  {
+    "id": "3c836de6-d7ea-4f4a-9d90-f27e96cf17a5",
+    "name": "Business License",
+    "description": "City business operations license",
+    "expirationDate": "2026-05-30T00:00:00.000Z"
+  },
+  {
+    "id": "2be8c59b-078f-4ac3-8f84-6df0d319bfdf",
+    "name": "Insurance Certificate",
+    "description": "General liability insurance document",
+    "expirationDate": "2026-02-11T00:00:00.000Z"
+  },
+  {
+    "id": "06cfd3db-0e2e-48c3-a450-818b8e6514a2",
+    "name": "California",
+    "description": "Todds Cali License",
+    "expirationDate": "2027-06-24T00:00:00.000Z"
+  }
+]

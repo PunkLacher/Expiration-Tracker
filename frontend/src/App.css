@@ -1,0 +1,440 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #1f2937;
+  background: #f4f6f8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.authPage {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.authCard {
+  width: 100%;
+  max-width: 460px;
+  padding: 22px;
+  border-radius: 12px;
+  border: 1px solid #dbe3ec;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.authCard h1 {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.authCard p {
+  margin-top: 0;
+}
+
+.authForm {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.authForm input {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 10px 24px 24px;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.titleBlock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.companyLogo {
+  width: 210px;
+  height: 210px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.headerMeta {
+  margin-top: 0;
+}
+
+.headerSubtitle {
+  margin: 4px 0 16px;
+  color: #4b5563;
+}
+
+.header h1 {
+  margin: 0 0 8px;
+}
+
+.header p {
+  margin: 0 0 24px;
+  color: #4b5563;
+}
+
+.info {
+  color: #334155;
+}
+
+.loadingStandalone {
+  padding: 24px;
+}
+
+.error {
+  color: #991b1b;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.success {
+  color: #14532d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.signedInAs {
+  color: #475569;
+  font-size: 0.92rem;
+}
+
+.workspacePanel {
+  margin-bottom: 18px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #dbe3ec;
+}
+
+.workspaceHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.workspaceHeader h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.workspaceSelect {
+  min-width: 220px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.workspaceCreateForm {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workspaceCreateForm input {
+  flex: 1;
+  min-width: 220px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.workspaceCreateForm .button {
+  margin-top: 0;
+}
+
+.workspaceList {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.workspaceList li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.createPanel {
+  margin-bottom: 18px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #dbe3ec;
+}
+
+.createPanel h2 {
+  margin: 0 0 10px;
+  font-size: 1.1rem;
+}
+
+.createForm {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.createForm input {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.createForm select {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.resultsToolbar {
+  margin-bottom: 12px;
+}
+
+.resultsToolbar .button {
+  margin-top: 0;
+}
+
+.listContainer {
+  display: grid;
+  gap: 8px;
+}
+
+.listHeader,
+.listRow {
+  display: grid;
+  grid-template-columns: 1.1fr 1.3fr 1fr 1fr 1fr 1fr 1.1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.listHeader {
+  background: #e2e8f0;
+  color: #0f172a;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.listItemWrap {
+  display: grid;
+  gap: 8px;
+}
+
+.listRow {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+}
+
+.listRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listRow.editing {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25), 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
+.card {
+  position: relative;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  padding: 16px;
+}
+
+.card.clickable {
+  cursor: pointer;
+}
+
+.card.editing {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25), 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.description {
+  margin: 0 0 10px;
+  color: #374151;
+}
+
+.dateLabel,
+.statusText {
+  margin: 8px 0;
+}
+
+.workspaceTag {
+  margin: 8px 0;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.cardPopover {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  max-width: 250px;
+  background: rgba(15, 23, 42, 0.95);
+  color: #f8fafc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  pointer-events: none;
+}
+
+.cardPopover p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.card:hover .cardPopover,
+.card:focus-within .cardPopover {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.cardHint {
+  margin: 8px 0 0;
+  color: #334155;
+  font-size: 0.9rem;
+}
+
+.green {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.yellow {
+  border-color: #eab308;
+  background: #fefce8;
+}
+
+.red {
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
+.expired {
+  border-color: #dc2626;
+  background: #fee2e2;
+}
+
+.flash {
+  animation: expiredFlash 1s infinite;
+}
+
+@keyframes expiredFlash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(220, 38, 38, 0);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(220, 38, 38, 0.75);
+  }
+}
+
+.button {
+  margin-top: 8px;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: #2563eb;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.createForm .button {
+  margin-top: 0;
+}
+
+.button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.button.secondary {
+  background: #6b7280;
+}
+
+.button.danger {
+  background: #b91c1c;
+}
+
+.button.small {
+  margin-top: 0;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.editPanel {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.editPanel input,
+.editPanel select {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
