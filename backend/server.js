@@ -39,10 +39,6 @@ let defaultWorkspaceId = null;
 let mailMode = "fallback";
 let smtpTransporter = null;
 
-// In-memory store for short-lived magic link tokens.
-// Key: sha256(token), Value: { email, expiresAt }
-const magicTokens = new Map();
-
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -71,12 +67,11 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function sweepExpiredMagicTokens() {
-  const now = Date.now();
-  for (const [key, value] of magicTokens.entries()) {
-    if (value.expiresAt <= now) {
-      magicTokens.delete(key);
-    }
+async function deleteExpiredMagicTokens() {
+  try {
+    await pool.query("DELETE FROM magic_tokens WHERE expires_at <= NOW()");
+  } catch (error) {
+    console.error("Failed to purge expired magic tokens:", error?.message);
   }
 }
 
@@ -224,6 +219,16 @@ async function initializeDatabase() {
     )
   `);
 
+  // Magic link tokens in DB avoid invalidation on process restart.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS magic_tokens (
+      token_hash TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   const defaultWorkspaceName = "General";
   const existingDefaultWorkspace = await pool.query(
     "SELECT id FROM workspaces WHERE name = $1 ORDER BY created_at ASC LIMIT 1",
@@ -328,12 +333,15 @@ app.post("/auth/request-magic-link", async (req, res) => {
     return res.status(400).json({ error: "Only @pooleng.com emails are allowed" });
   }
 
-  sweepExpiredMagicTokens();
+  await deleteExpiredMagicTokens();
 
   const rawToken = crypto.randomBytes(32).toString("hex");
   const tokenHash = hashToken(rawToken);
-  const expiresAt = Date.now() + MAGIC_LINK_MINUTES * 60 * 1000;
-  magicTokens.set(tokenHash, { email, expiresAt });
+  const expiresAtIso = new Date(Date.now() + MAGIC_LINK_MINUTES * 60 * 1000).toISOString();
+  await pool.query(
+    "INSERT INTO magic_tokens (token_hash, email, expires_at) VALUES ($1, $2, $3) ON CONFLICT (token_hash) DO UPDATE SET email = EXCLUDED.email, expires_at = EXCLUDED.expires_at",
+    [tokenHash, email, expiresAtIso]
+  );
 
   const link = `${MAGIC_LINK_BASE_URL}/auth/verify-magic?token=${encodeURIComponent(rawToken)}`;
 
@@ -345,7 +353,7 @@ app.post("/auth/request-magic-link", async (req, res) => {
       code: error?.code,
       response: error?.response
     });
-    magicTokens.delete(tokenHash);
+    await pool.query("DELETE FROM magic_tokens WHERE token_hash = $1", [tokenHash]).catch(() => {});
     return res.status(500).json({
       error:
         process.env.NODE_ENV === "production"
@@ -357,24 +365,36 @@ app.post("/auth/request-magic-link", async (req, res) => {
   return res.json({ message: "If the email is valid, a magic login link has been sent." });
 });
 
-app.get("/auth/verify-magic", (req, res) => {
+app.get("/auth/verify-magic", async (req, res) => {
   const rawToken = String(req.query.token || "");
   if (!rawToken) {
     return res.redirect(`${FRONTEND_URL}/login?error=missing_token`);
   }
 
-  sweepExpiredMagicTokens();
-  const tokenHash = hashToken(rawToken);
-  const tokenRecord = magicTokens.get(tokenHash);
-  if (!tokenRecord || tokenRecord.expiresAt <= Date.now()) {
-    magicTokens.delete(tokenHash);
+  try {
+    await deleteExpiredMagicTokens();
+    const tokenHash = hashToken(rawToken);
+    const tokenResult = await pool.query(
+      "SELECT email, expires_at AS \"expiresAt\" FROM magic_tokens WHERE token_hash = $1 LIMIT 1",
+      [tokenHash]
+    );
+
+    if (tokenResult.rows.length === 0) {
+      return res.redirect(`${FRONTEND_URL}/login?error=expired_or_invalid`);
+    }
+
+    const tokenRecord = tokenResult.rows[0];
+    if (new Date(tokenRecord.expiresAt).getTime() <= Date.now()) {
+      await pool.query("DELETE FROM magic_tokens WHERE token_hash = $1", [tokenHash]).catch(() => {});
+      return res.redirect(`${FRONTEND_URL}/login?error=expired_or_invalid`);
+    }
+
+    const sessionToken = createSessionToken(tokenRecord.email);
+    res.cookie(COOKIE_NAME, sessionToken, getSessionCookieOptions());
+    return res.redirect(`${FRONTEND_URL}/dashboard`);
+  } catch (error) {
     return res.redirect(`${FRONTEND_URL}/login?error=expired_or_invalid`);
   }
-
-  magicTokens.delete(tokenHash);
-  const sessionToken = createSessionToken(tokenRecord.email);
-  res.cookie(COOKIE_NAME, sessionToken, getSessionCookieOptions());
-  return res.redirect(`${FRONTEND_URL}/dashboard`);
 });
 
 app.get("/auth/me", requireAuth, (req, res) => {
