@@ -16,6 +16,7 @@ frontend/dist/
 !frontend/.env.example
 backend/.env
 frontend/.env
+backend/NODE_ENV_production.ini
 
 # Runtime database (do not commit production/runtime data)
 backend/data.db
