@@ -264,6 +264,7 @@ function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [error, setError] = useState("");
+  const [workspaceDocumentCounts, setWorkspaceDocumentCounts] = useState({});
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
@@ -348,8 +349,42 @@ function DashboardPage() {
     }
   }
 
+  function buildWorkspaceCounts(documents) {
+    const counts = {};
+    for (const document of documents) {
+      if (!document.workspaceId) {
+        continue;
+      }
+      counts[document.workspaceId] = (counts[document.workspaceId] || 0) + 1;
+    }
+    return counts;
+  }
+
+  async function loadWorkspaceDocumentCounts() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/documents`, {
+        credentials: "include"
+      });
+
+      if (response.status === 401) {
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, "Unable to load workspace document counts."));
+      }
+
+      const data = await response.json();
+      setWorkspaceDocumentCounts(buildWorkspaceCounts(data));
+    } catch (countError) {
+      setError(countError.message);
+    }
+  }
+
   useEffect(() => {
     loadWorkspaces();
+    loadWorkspaceDocumentCounts();
   }, []);
 
   useEffect(() => {
@@ -413,6 +448,7 @@ function DashboardPage() {
 
       setNewWorkspaceName("");
       await loadWorkspaces();
+      await loadWorkspaceDocumentCounts();
     } catch (workspaceError) {
       setError(workspaceError.message);
     } finally {
@@ -454,6 +490,7 @@ function DashboardPage() {
       }
 
       await loadWorkspaces();
+      await loadWorkspaceDocumentCounts();
       await loadItems(nextSelectedWorkspace);
     } catch (workspaceError) {
       // Backend returns a specific error when workspace still contains documents.
@@ -503,6 +540,7 @@ function DashboardPage() {
         expirationDate: "",
         workspaceId: ""
       });
+      await loadWorkspaceDocumentCounts();
       await loadItems(selectedWorkspaceId);
     } catch (createError) {
       setError(createError.message);
@@ -543,6 +581,7 @@ function DashboardPage() {
       }
 
       closeEditor();
+      await loadWorkspaceDocumentCounts();
       await loadItems(selectedWorkspaceId);
     } catch (saveError) {
       setError(saveError.message);
@@ -587,6 +626,7 @@ function DashboardPage() {
         closeEditor();
       }
 
+      await loadWorkspaceDocumentCounts();
       await loadItems(selectedWorkspaceId);
     } catch (deleteError) {
       setError(deleteError.message);
@@ -695,182 +735,208 @@ function DashboardPage() {
 
       <p className="headerSubtitle">Track renewals and prioritize items that are close to expiration.</p>
 
-      <section className="workspacePanel">
-        <div className="workspaceHeader">
-          <h2>Workspaces</h2>
-          <select
-            className="workspaceSelect"
-            value={selectedWorkspaceId}
-            onChange={(event) => setSelectedWorkspaceId(event.target.value)}
-            disabled={workspaceLoading}
-          >
-            <option value="">All Workspaces</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <form className="workspaceCreateForm" onSubmit={createWorkspace}>
-          <input
-            type="text"
-            placeholder="New workspace name"
-            value={newWorkspaceName}
-            onChange={(event) => setNewWorkspaceName(event.target.value)}
-          />
-          <button className="button" type="submit" disabled={creatingWorkspace}>
-            {creatingWorkspace ? "Creating..." : "Create Workspace"}
-          </button>
-        </form>
-
-        <ul className="workspaceList">
-          {workspaces.map((workspace) => (
-            <li key={workspace.id}>
-              <span>{workspace.name}</span>
-              <button
-                className="button danger small"
-                type="button"
-                disabled={deletingWorkspaceId === workspace.id}
-                onClick={() => deleteWorkspace(workspace.id)}
-              >
-                {deletingWorkspaceId === workspace.id ? "Deleting..." : "Delete"}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="createPanel">
-        <h2>Add License / Document</h2>
-        <form className="createForm" onSubmit={submitCreate}>
-          <input
-            type="text"
-            placeholder="Name"
-            value={createForm.name}
-            onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
-          />
-          <input
-            type="text"
-            placeholder="Description"
-            value={createForm.description}
-            onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))}
-          />
-          <input
-            type="date"
-            value={createForm.expirationDate}
-            onChange={(event) =>
-              setCreateForm((current) => ({ ...current, expirationDate: event.target.value }))
-            }
-          />
-          <select
-            value={createForm.workspaceId}
-            onChange={(event) => setCreateForm((current) => ({ ...current, workspaceId: event.target.value }))}
-          >
-            <option value="">Select Workspace</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-          <button className="button" type="submit" disabled={creating || workspaces.length === 0}>
-            {creating ? "Adding..." : "Add Item"}
-          </button>
-        </form>
-      </section>
-
-      {loading && <p className="info">Loading records...</p>}
-      {error && <p className="error">{error}</p>}
-
-      <section className="resultsToolbar">
-        <button
-          className="button secondary"
-          type="button"
-          onClick={() => setLayoutMode((current) => (current === "cards" ? "list" : "cards"))}
-        >
-          Switch to {layoutMode === "cards" ? "List" : "Cards"} View
-        </button>
-      </section>
-
-      {layoutMode === "cards" ? (
-        <section className="cardGrid">
-          {sortedItems.map((item) => {
-            const status = getStatus(item.expirationDate);
-            const timeUntilExpiration = getTimeUntilExpirationLabel(item.expirationDate);
-            const isEditing = activeCardId === item.id;
-            const isExpired = status === "expired";
-
-            return (
-              <article
-                key={item.id}
-                className={`card clickable ${status} ${isExpired ? "flash" : ""} ${isEditing ? "editing" : ""}`}
-                onClick={() => {
-                  if (!isEditing) {
-                    openEditor(item);
-                  }
-                }}
-              >
-                <h2>{item.name}</h2>
-                <p className="description">{item.description}</p>
-                <p className="workspaceTag">Workspace: {workspaceNameById[item.workspaceId] || "Unknown"}</p>
-                <div className="cardPopover">
-                  <p>Created by: {item.createdBy || "Unknown"}</p>
-                  <p>Created at: {formatDateTime(item.createdAt)}</p>
-                </div>
-                <p className="dateLabel">
-                  Expires: <strong>{formatDate(item.expirationDate)}</strong>
-                </p>
-                <p className="statusText">{timeUntilExpiration}</p>
-                {!isEditing && <p className="cardHint">Click card to edit or delete</p>}
-                {isEditing && renderEditPanel(item.id)}
-              </article>
-            );
-          })}
-        </section>
-      ) : (
-        <section className="listContainer">
-          <div className="listHeader">
-            <span>Name</span>
-            <span>Description</span>
-            <span>Workspace</span>
-            <span>Expires</span>
-            <span>Time Left</span>
-            <span>Created By</span>
-            <span>Created At</span>
+      <div className="dashboardLayout">
+        <aside className="workspacePanel workspaceSidebar">
+          <div className="workspaceHeader">
+            <h2>Workspaces</h2>
+            <select
+              className="workspaceSelect"
+              value={selectedWorkspaceId}
+              onChange={(event) => setSelectedWorkspaceId(event.target.value)}
+              disabled={workspaceLoading}
+            >
+              <option value="">All Workspaces</option>
+              {workspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {sortedItems.map((item) => {
-            const status = getStatus(item.expirationDate);
-            const timeUntilExpiration = getTimeUntilExpirationLabel(item.expirationDate);
-            const isEditing = activeCardId === item.id;
-            const isExpired = status === "expired";
+          <form className="workspaceCreateForm" onSubmit={createWorkspace}>
+            <input
+              type="text"
+              placeholder="New workspace name"
+              value={newWorkspaceName}
+              onChange={(event) => setNewWorkspaceName(event.target.value)}
+            />
+            <button className="button" type="submit" disabled={creatingWorkspace}>
+              {creatingWorkspace ? "Creating..." : "Create Workspace"}
+            </button>
+          </form>
 
-            return (
-              <div key={item.id} className="listItemWrap">
-                <div
-                  className={`listRow clickable ${status} ${isExpired ? "flash" : ""} ${isEditing ? "editing" : ""}`}
-                  onClick={() => {
-                    if (!isEditing) {
-                      openEditor(item);
-                    }
-                  }}
-                >
-                  <span>{item.name}</span>
-                  <span>{item.description}</span>
-                  <span>{workspaceNameById[item.workspaceId] || "Unknown"}</span>
-                  <span>{formatDate(item.expirationDate)}</span>
-                  <span>{timeUntilExpiration}</span>
-                  <span>{item.createdBy || "Unknown"}</span>
-                  <span>{formatDateTime(item.createdAt)}</span>
-                </div>
-                {isEditing && renderEditPanel(item.id)}
+          <ul className="workspaceList">
+            <li
+              className={`workspaceCard ${selectedWorkspaceId === "" ? "active" : ""}`}
+              onClick={() => setSelectedWorkspaceId("")}
+            >
+              <div className="workspaceInfo">
+                <span className="workspaceName">All Workspaces</span>
               </div>
-            );
-          })}
+            </li>
+            {workspaces.map((workspace) => (
+              <li
+                key={workspace.id}
+                className={`workspaceCard ${selectedWorkspaceId === workspace.id ? "active" : ""}`}
+                onClick={() => setSelectedWorkspaceId(workspace.id)}
+              >
+                <div className="workspaceInfo">
+                  <span className="workspaceName">{workspace.name}</span>
+                  <span className="workspaceDocCount">
+                    {workspaceDocumentCounts[workspace.id] || 0} document(s)
+                  </span>
+                </div>
+                {(workspaceDocumentCounts[workspace.id] || 0) === 0 && (
+                  <button
+                    className="button danger small"
+                    type="button"
+                    disabled={deletingWorkspaceId === workspace.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      deleteWorkspace(workspace.id);
+                    }}
+                  >
+                    {deletingWorkspaceId === workspace.id ? "Deleting..." : "Delete"}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </aside>
+
+        <section className="mainContent">
+          <section className="createPanel">
+            <h2>Add License / Document</h2>
+            <form className="createForm" onSubmit={submitCreate}>
+              <input
+                type="text"
+                placeholder="Name"
+                value={createForm.name}
+                onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
+              />
+              <input
+                type="text"
+                placeholder="Description"
+                value={createForm.description}
+                onChange={(event) => setCreateForm((current) => ({ ...current, description: event.target.value }))}
+              />
+              <input
+                type="date"
+                value={createForm.expirationDate}
+                onChange={(event) =>
+                  setCreateForm((current) => ({ ...current, expirationDate: event.target.value }))
+                }
+              />
+              <select
+                value={createForm.workspaceId}
+                onChange={(event) => setCreateForm((current) => ({ ...current, workspaceId: event.target.value }))}
+              >
+                <option value="">Select Workspace</option>
+                {workspaces.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </option>
+                ))}
+              </select>
+              <button className="button" type="submit" disabled={creating || workspaces.length === 0}>
+                {creating ? "Adding..." : "Add Item"}
+              </button>
+            </form>
+          </section>
+
+          {loading && <p className="info">Loading records...</p>}
+          {error && <p className="error">{error}</p>}
+
+          <section className="resultsToolbar">
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => setLayoutMode((current) => (current === "cards" ? "list" : "cards"))}
+            >
+              Switch to {layoutMode === "cards" ? "List" : "Cards"} View
+            </button>
+          </section>
+
+          {layoutMode === "cards" ? (
+            <section className="cardGrid">
+              {sortedItems.map((item) => {
+                const status = getStatus(item.expirationDate);
+                const timeUntilExpiration = getTimeUntilExpirationLabel(item.expirationDate);
+                const isEditing = activeCardId === item.id;
+                const isExpired = status === "expired";
+
+                return (
+                  <article
+                    key={item.id}
+                    className={`card clickable ${status} ${isExpired ? "flash" : ""} ${isEditing ? "editing" : ""}`}
+                    onClick={() => {
+                      if (!isEditing) {
+                        openEditor(item);
+                      }
+                    }}
+                  >
+                    <h2>{item.name}</h2>
+                    <p className="description">{item.description}</p>
+                    <p className="workspaceTag">Workspace: {workspaceNameById[item.workspaceId] || "Unknown"}</p>
+                    <div className="cardPopover">
+                      <p>Created by: {item.createdBy || "Unknown"}</p>
+                      <p>Created at: {formatDateTime(item.createdAt)}</p>
+                    </div>
+                    <p className="dateLabel">
+                      Expires: <strong>{formatDate(item.expirationDate)}</strong>
+                    </p>
+                    <p className="statusText">{timeUntilExpiration}</p>
+                    {!isEditing && <p className="cardHint">Click card to edit or delete</p>}
+                    {isEditing && renderEditPanel(item.id)}
+                  </article>
+                );
+              })}
+            </section>
+          ) : (
+            <section className="listContainer">
+              <div className="listHeader">
+                <span>Name</span>
+                <span>Description</span>
+                <span>Workspace</span>
+                <span>Expires</span>
+                <span>Time Left</span>
+                <span>Created By</span>
+                <span>Created At</span>
+              </div>
+
+              {sortedItems.map((item) => {
+                const status = getStatus(item.expirationDate);
+                const timeUntilExpiration = getTimeUntilExpirationLabel(item.expirationDate);
+                const isEditing = activeCardId === item.id;
+                const isExpired = status === "expired";
+
+                return (
+                  <div key={item.id} className="listItemWrap">
+                    <div
+                      className={`listRow clickable ${status} ${isExpired ? "flash" : ""} ${isEditing ? "editing" : ""}`}
+                      onClick={() => {
+                        if (!isEditing) {
+                          openEditor(item);
+                        }
+                      }}
+                    >
+                      <span>{item.name}</span>
+                      <span>{item.description}</span>
+                      <span>{workspaceNameById[item.workspaceId] || "Unknown"}</span>
+                      <span>{formatDate(item.expirationDate)}</span>
+                      <span>{timeUntilExpiration}</span>
+                      <span>{item.createdBy || "Unknown"}</span>
+                      <span>{formatDateTime(item.createdAt)}</span>
+                    </div>
+                    {isEditing && renderEditPanel(item.id)}
+                  </div>
+                );
+              })}
+            </section>
+          )}
         </section>
-      )}
+      </div>
     </main>
   );
 }

@@ -134,11 +134,25 @@ body {
   border: 1px solid #dbe3ec;
 }
 
+.dashboardLayout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.workspaceSidebar {
+  margin-bottom: 0;
+}
+
+.mainContent {
+  min-width: 0;
+}
+
 .workspaceHeader {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
+  display: grid;
+  gap: 8px;
+  align-items: start;
 }
 
 .workspaceHeader h2 {
@@ -147,7 +161,7 @@ body {
 }
 
 .workspaceSelect {
-  min-width: 220px;
+  width: 100%;
   padding: 8px;
   border-radius: 8px;
   border: 1px solid #cbd5e1;
@@ -162,7 +176,7 @@ body {
 
 .workspaceCreateForm input {
   flex: 1;
-  min-width: 220px;
+  min-width: 100%;
   padding: 8px;
   border-radius: 8px;
   border: 1px solid #cbd5e1;
@@ -188,6 +202,57 @@ body {
   padding: 8px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
+}
+
+.workspaceCard {
+  cursor: pointer;
+}
+
+.workspaceCard.active {
+  position: relative;
+  border-color: #1d4ed8;
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.15);
+}
+
+.workspaceCard.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 5px;
+  border-radius: 8px 0 0 8px;
+  background: #1d4ed8;
+}
+
+.workspaceInfo {
+  display: grid;
+  gap: 2px;
+}
+
+.workspaceName {
+  font-weight: 600;
+}
+
+.workspaceCard.active .workspaceName {
+  font-weight: 700;
+  color: #1e3a8a;
+}
+
+.workspaceDocCount {
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.workspaceCard.active .workspaceDocCount {
+  color: #1e40af;
+}
+
+@media (max-width: 980px) {
+  .dashboardLayout {
+    grid-template-columns: 1fr;
+  }
 }
 
 .createPanel {
